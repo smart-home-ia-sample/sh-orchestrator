@@ -1,0 +1,14 @@
+# Tool config only — sh-orchestrator is an app, not a distributable package.
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/__init__.py", "app/graph/__init__.py"]
+
+[tool.coverage.report]
+show_missing = true
+# CI "test / coverage" gate: pytest-cov fails the run below this.
+fail_under = 78

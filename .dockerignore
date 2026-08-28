@@ -6,3 +6,5 @@ venv
 .git
 tests
 *.md
+.github
+pyproject.toml

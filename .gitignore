@@ -1,7 +1,21 @@
+# python
 __pycache__/
 *.pyc
-.pytest_cache/
+*.egg-info/
 .venv/
 venv/
-*.egg-info/
+
+# build
+build/
+dist/
+
+# test / coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# local
 .env
