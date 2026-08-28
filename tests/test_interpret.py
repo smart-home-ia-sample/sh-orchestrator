@@ -3,7 +3,12 @@ import os
 
 os.environ.setdefault("LLM_PROVIDER", "mock")
 
-from app.graph.interpret import interpret_command  # noqa: E402
+from app.graph.interpret import (  # noqa: E402
+    DEVICE_VERBS,
+    available_verbs,
+    build_system_prompt,
+    interpret_command,
+)
 
 
 def test_turn_off_light():
@@ -226,3 +231,73 @@ def test_bare_ambiguous_number_without_history_is_unknown():
     result = asyncio.run(interpret_command("Melhor 26.", context={"on": True, "temperature": 22.0}))
 
     assert result.intent == "unknown"
+
+
+# ---- prompt bits derived from the live topology ------------------------------
+
+
+def test_available_verbs_falls_back_to_all_when_topology_is_empty():
+    assert available_verbs(None) == list(DEVICE_VERBS)
+    assert available_verbs({"devices": []}) == list(DEVICE_VERBS)
+
+
+def test_available_verbs_is_the_intersection_with_installed_actions():
+    topology = {
+        "devices": [
+            {"id": "l1", "room": "living_room", "type": "light", "actions": ["turn_on", "turn_off"]},
+            {"id": "d1", "room": "entrance", "type": "door", "actions": ["lock", "unlock"]},
+        ]
+    }
+    # no AC installed -> set_temperature drops out of the verb menu
+    assert available_verbs(topology) == ["turn_on", "turn_off", "lock", "unlock"]
+
+
+def test_system_prompt_renders_the_dynamic_verb_menu_and_ac_range():
+    topology = {
+        "devices": [
+            {"id": "l1", "room": "living_room", "type": "light", "actions": ["turn_on", "turn_off"]},
+            {
+                "id": "ac1",
+                "room": "bedroom",
+                "type": "ac",
+                "actions": ["turn_on", "turn_off", "set_temperature"],
+                "params": {"set_temperature": {"min": 17, "max": 28}},
+            },
+            {"id": "a1", "room": "home", "type": "alarm", "actions": ["arm", "disarm"]},
+        ]
+    }
+    prompt = build_system_prompt(topology)
+
+    assert "<<VERBS>>" not in prompt and "<<AC_MIN>>" not in prompt and "<<ALARM_ID>>" not in prompt
+    assert "turn_on, turn_off, set_temperature, arm, disarm" in prompt
+    assert "17°C and 28°C" in prompt
+    assert 'device_id="a1"' in prompt
+
+
+def test_system_prompt_uses_hard_defaults_without_a_topology():
+    prompt = build_system_prompt(None)
+
+    assert "16°C and 30°C" in prompt
+    assert 'device_id="alarm"' in prompt
+    assert ", ".join(DEVICE_VERBS) in prompt
+
+
+def test_temperature_clamp_respects_the_installed_ac_bounds():
+    topology = {
+        "devices": [
+            {
+                "id": "bedroom_ac",
+                "room": "bedroom",
+                "type": "ac",
+                "actions": ["set_temperature"],
+                "params": {"set_temperature": {"min": 19, "max": 25}},
+            }
+        ]
+    }
+    result = asyncio.run(
+        interpret_command(
+            "Diminua mais.", context={"on": True, "temperature": 20.0}, topology=topology
+        )
+    )
+
+    assert result.temperature == 19.0  # 20 - 2 = 18, clamped up to the announced min
