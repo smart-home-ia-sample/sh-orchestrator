@@ -48,9 +48,9 @@ class FakeMcpClient:
 def _build_fake_bfa_app() -> FastAPI:
     app = FastAPI()
 
-    @app.get("/agents")
-    def list_agents(capability: str | None = None):
-        return [{"name": "fake", "endpoint": "http://fake"}]
+    @app.post("/resolve/agents")
+    def resolve_agents(body: dict):
+        return [{"kind": "agent", "service": "fake", "url": "http://fake", "id": body.get("query", ""), "score": 1.0}]
 
     return app
 

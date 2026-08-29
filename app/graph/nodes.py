@@ -166,13 +166,10 @@ async def chitchat(state: OrchestratorState) -> dict:
 
 
 async def _has_provider(client: httpx.AsyncClient, bfa_url: str, capability: str) -> bool:
-    """Is a healthy agent registered for `capability`? Ask the BFA's ranked
-    `/resolve/agents` first (capability text vs the A2A catalog); only if that
-    answers 200-but-empty do we fall back to the exact `GET /agents?capability=`
-    lookup, so a BM25 miss on a valid capability never blocks a real command. A
-    transport error means the BFA itself is unreachable — no point retrying the
-    same host with the other endpoint; report no provider and let the graph
-    degrade via recovery_explain."""
+    """Is there an agent in the BFA catalog that can do `capability`? Ask the
+    ranked `POST /resolve/agents` with threshold 0 so a weak BM25 score on a
+    real verb still counts. A transport error means the BFA is unreachable —
+    report no provider and let the graph degrade via recovery_explain."""
     try:
         resolved = await client.post(
             f"{bfa_url}/resolve/agents",
@@ -180,15 +177,7 @@ async def _has_provider(client: httpx.AsyncClient, bfa_url: str, capability: str
         )
     except httpx.HTTPError:
         return False
-
-    if resolved.status_code == 200 and resolved.json():
-        return True
-
-    try:
-        exact = await client.get(f"{bfa_url}/agents", params={"capability": capability})
-        return exact.status_code == 200 and bool(exact.json())
-    except httpx.HTTPError:
-        return False
+    return resolved.status_code == 200 and bool(resolved.json())
 
 
 async def discover(state: OrchestratorState) -> dict:

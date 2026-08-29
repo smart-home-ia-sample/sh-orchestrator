@@ -40,7 +40,7 @@ ALARM_DEVICE_ID = "alarm"
 # the prompt by `_topology_text` and re-checked at runtime in the interpret node.
 ControllableDevice = str
 
-SYSTEM_PROMPT = """You classify a Portuguese smart-home voice command into exactly one intent.
+_SYSTEM_PROMPT_TEMPLATE = """You classify a Portuguese smart-home voice command into exactly one intent.
 This is a precise matching task, not creative writing: pick the single tool (capability)
 that actually operates on the device type and room the user mentioned, the same way a
 human operator would glance at a panel of switches and press the one that matches. Do not
@@ -99,15 +99,14 @@ Intents (with example Portuguese phrasings that should all match):
   - "melhor 26" / "coloca em 26" -> the user gave an explicit target, output 26 directly,
     ignoring the current reading.
   Without any current-temperature context, fall back to 20°C for a "too hot"-style request
-  or 24°C for a "too cold"-style request. A real AC only makes sense roughly between 16°C
-  and 30°C — never output a value outside that range.
+  or 24°C for a "too cold"-style request. A real AC only makes sense roughly between
+  <<AC_MIN>>°C and <<AC_MAX>>°C — never output a value outside that range.
 
-  Set capability to exactly one generic verb: turn_on, turn_off, set_brightness,
-  set_temperature, open, close, lock, unlock, arm, disarm. The verb is the same for
+  Set capability to exactly one generic verb: <<VERBS>>. The verb is the same for
   every device type — "liga a TV", "liga a cafeteira" and "acende a luz" are all
   turn_on; the device_id says WHICH device.
   Set device_id to the id of the device the user means (see the inventory below if one
-  is provided). For arm/disarm use device_id="alarm".
+  is provided). For arm/disarm use device_id="<<ALARM_ID>>".
   If the user asks to control a device type or room that doesn't exist, use "unknown".
   Set brightness (0-100) when capability is set_brightness.
   Examples:
@@ -125,7 +124,7 @@ Intents (with example Portuguese phrasings that should all match):
   - "melhor 26" (mid-conversation about the AC) -> capability=set_temperature,
     device_id=bedroom_ac, temperature=26
   - "tranca a porta da frente" -> capability=lock, device_id=front_door
-  - "arma o alarme" -> capability=arm, device_id=alarm
+  - "arma o alarme" -> capability=arm, device_id=<<ALARM_ID>>
 - chitchat: a bare greeting or social opener with nothing actionable in it — "olá",
   "oi", "bom dia", "boa tarde", "e aí", "tudo bem?", "como você está?", "opa". Use
   this (not "unknown", not "home_status") when the user is just saying hi or making
@@ -135,7 +134,7 @@ Intents (with example Portuguese phrasings that should all match):
 - unknown: none of the above apply (be conservative — prefer a real intent when the
   message is close to one of the examples above, even if not an exact match).
 
-For turn_off_light, set device_id to one of: living_room_light, kitchen_light, bedroom_light
+For turn_off_light, set device_id to one of: <<LIGHT_IDS>>
 (pick based on the room mentioned; default to living_room_light if unclear).
 For every intent other than turn_off_light and device_control, device_id/capability/
 temperature/brightness must all be null."""
@@ -155,8 +154,12 @@ MIN_AC_TEMPERATURE = 16.0
 MAX_AC_TEMPERATURE = 30.0
 
 
-def _clamp_ac_temperature(value: float) -> float:
-    return max(MIN_AC_TEMPERATURE, min(MAX_AC_TEMPERATURE, value))
+def _clamp_ac_temperature(value: float, topology: dict | None = None) -> float:
+    """Clamp to what a real AC accepts. The range comes from the installed AC's
+    announced descriptor (`params.set_temperature`) when the topology is known,
+    otherwise the hard defaults."""
+    lo, hi = _ac_temp_range(topology)
+    return max(lo, min(hi, value))
 
 
 def _topology_devices(topology: dict | None) -> list[dict]:
@@ -230,6 +233,57 @@ def _topology_text(topology: dict | None) -> str:
         "\n\nDispositivos realmente cadastrados nesta casa agora — use SOMENTE estes ids "
         "no campo device_id. Se o cômodo ou o tipo de aparelho que o usuário pediu não "
         f"aparecer nesta lista, não há o que controlar: responda com intent \"unknown\".\n{lines}"
+    )
+
+
+# ---- prompt bits derived from what the house actually has ----------------------
+
+
+def available_verbs(topology: dict | None) -> list[str]:
+    """The generic verbs currently actionable in this house: the ones the
+    interpreter can emit (DEVICE_VERBS) ∩ the union of every installed device's
+    announced `actions`. Falls back to all of DEVICE_VERBS when the topology is
+    empty / the MCP is unreachable — never an empty menu."""
+    installed = {a for d in _topology_devices(topology) for a in (d.get("actions") or [])}
+    verbs = [v for v in DEVICE_VERBS if v in installed]
+    return verbs or list(DEVICE_VERBS)
+
+
+def _light_ids(topology: dict | None) -> list[str]:
+    ids = [d["id"] for d in _topology_devices(topology) if d.get("type") in ("light", "dimmable_light")]
+    return ids or ["living_room_light", "kitchen_light", "bedroom_light"]
+
+
+def _alarm_id(topology: dict | None) -> str:
+    return _resolve_by_type(topology, "alarm", ALARM_DEVICE_ID)
+
+
+def _ac_temp_range(topology: dict | None) -> tuple[float, float]:
+    """(min, max) target °C from an installed AC's announced descriptor
+    (`params.set_temperature`), else the hard defaults."""
+    for d in _topology_devices(topology):
+        if d.get("type") == "ac":
+            bounds = (d.get("params") or {}).get("set_temperature") or {}
+            return (
+                float(bounds.get("min", MIN_AC_TEMPERATURE)),
+                float(bounds.get("max", MAX_AC_TEMPERATURE)),
+            )
+    return MIN_AC_TEMPERATURE, MAX_AC_TEMPERATURE
+
+
+def _fmt_num(x: float) -> str:
+    return str(int(x)) if float(x).is_integer() else str(x)
+
+
+def build_system_prompt(topology: dict | None) -> str:
+    lo, hi = _ac_temp_range(topology)
+    return (
+        _SYSTEM_PROMPT_TEMPLATE
+        .replace("<<VERBS>>", ", ".join(available_verbs(topology)))
+        .replace("<<LIGHT_IDS>>", ", ".join(_light_ids(topology)))
+        .replace("<<ALARM_ID>>", _alarm_id(topology))
+        .replace("<<AC_MIN>>", _fmt_num(lo))
+        .replace("<<AC_MAX>>", _fmt_num(hi))
     )
 
 
@@ -367,7 +421,7 @@ def _interpret_device_control_mock(
                 intent="device_control",
                 capability="set_temperature",
                 device_id=device_id,
-                temperature=_clamp_ac_temperature(float(temp_match.group(1))),
+                temperature=_clamp_ac_temperature(float(temp_match.group(1)), topology),
             )
         if "quente" in text or any(k in text for k in decrease_keywords):
             temperature = current_temperature - 2.0 if current_temperature is not None else 20.0
@@ -375,7 +429,7 @@ def _interpret_device_control_mock(
                 intent="device_control",
                 capability="set_temperature",
                 device_id=device_id,
-                temperature=_clamp_ac_temperature(temperature),
+                temperature=_clamp_ac_temperature(temperature, topology),
             )
         if "frio" in text or any(k in text for k in increase_keywords):
             temperature = current_temperature + 2.0 if current_temperature is not None else 24.0
@@ -383,7 +437,7 @@ def _interpret_device_control_mock(
                 intent="device_control",
                 capability="set_temperature",
                 device_id=device_id,
-                temperature=_clamp_ac_temperature(temperature),
+                temperature=_clamp_ac_temperature(temperature, topology),
             )
         if "deslig" in text:
             return InterpretedCommand(intent="device_control", capability="turn_off", device_id=device_id)
@@ -396,9 +450,9 @@ def _interpret_device_control_mock(
     if "destranca" in text or "destrancar" in text:
         return InterpretedCommand(intent="device_control", capability="unlock", device_id=door_id)
     if "arma" in text and "alarme" in text:
-        return InterpretedCommand(intent="device_control", capability="arm", device_id=ALARM_DEVICE_ID)
+        return InterpretedCommand(intent="device_control", capability="arm", device_id=_alarm_id(topology))
     if "desarma" in text and "alarme" in text:
-        return InterpretedCommand(intent="device_control", capability="disarm", device_id=ALARM_DEVICE_ID)
+        return InterpretedCommand(intent="device_control", capability="disarm", device_id=_alarm_id(topology))
 
     return None
 
@@ -480,11 +534,11 @@ async def _interpret_with_llm(
     # forces valid *shape* but not correct *content* — smaller models like llama3.1:8b
     # tend to leave optional fields (e.g. device_id) null under that constraint even when
     # they clearly understood the command. Plain json_mode, guided by the prose examples
-    # already in SYSTEM_PROMPT, is far more reliable for this model in practice.
+    # already in the system prompt, is far more reliable for this model in practice.
     method = "json_mode" if provider == "ollama" else "function_calling"
     structured_llm = llm.with_structured_output(InterpretedCommand, method=method)
     prompt = (
-        f"{SYSTEM_PROMPT}{_topology_text(topology)}{_ac_context_text(context)}"
+        f"{build_system_prompt(topology)}{_topology_text(topology)}{_ac_context_text(context)}"
         f"{_history_text(history)}\n\nCommand: {user_message}"
     )
     return await structured_llm.ainvoke(prompt)
@@ -500,7 +554,7 @@ async def interpret_command(
     if provider == "mock":
         # The mock is a pure keyword classifier by design (CI, no model available),
         # so it owns its own greeting rule. The real LLM path classifies `chitchat`
-        # itself from the SYSTEM_PROMPT — no shortcut around it.
+        # itself from the system prompt — no shortcut around it.
         command = _interpret_mock(user_message, context, history, topology)
     else:
         command = await _interpret_with_llm(user_message, context, history, topology)
@@ -508,7 +562,7 @@ async def interpret_command(
     # Safety net regardless of provider: never trust the interpreter (mock or LLM) to
     # keep the value within what a real AC can do — clamp here as the single choke point.
     if command.capability == "set_temperature" and command.temperature is not None:
-        command.temperature = _clamp_ac_temperature(command.temperature)
+        command.temperature = _clamp_ac_temperature(command.temperature, topology)
 
     return command
 

@@ -21,7 +21,7 @@ FROM shcommon-${SH_COMMON_SOURCE} AS base
 WORKDIR /app
 ARG SH_COMMON_SOURCE=git
 ARG GH_OWNER=smart-home-ia-sample
-ARG SH_COMMON_REF=v0.1.0
+ARG SH_COMMON_REF=v0.2.0
 ARG GH_TOKEN=
 RUN if [ "$SH_COMMON_SOURCE" = "local" ]; then \
       pip install --no-cache-dir /sh-common; \

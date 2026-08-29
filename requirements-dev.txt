@@ -1,4 +1,4 @@
 -r requirements.txt
-sh-common @ git+https://github.com/smart-home-ia-sample/sh-common.git@v0.1.0
+sh-common @ git+https://github.com/smart-home-ia-sample/sh-common.git@v0.2.0
 pytest==8.3.3
 pytest-cov==5.0.0
